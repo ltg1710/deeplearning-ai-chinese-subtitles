@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "DeepLearning.AI 中文字幕",
+  "version": "1.0.0",
+  "description": "自动抓取 learn.deeplearning.ai 视频字幕，机翻成中文，叠加到视频上。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://learn.deeplearning.ai/*",
+    "https://video.deeplearning.ai/*",
+    "https://translate.googleapis.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://learn.deeplearning.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
