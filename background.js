@@ -48,16 +48,20 @@ async function translate(text) {
 }
 
 // 带重试 + 退避(429/timeout 等临时失败)
-async function translateWithRetry(text, maxRetries = 3) {
+// 单个 cue 最多 ~5s, 不会让 UI 看着卡死
+const RETRY_DELAYS = [600, 1500, 3000];  // 退避序列, 长度即最大重试次数
+
+async function translateWithRetry(text) {
   let lastErr;
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+  // 第 1 次尝试 + 每个 delay 后再试一次 = 共 RETRY_DELAYS.length + 1 次
+  for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
     try {
       return await translate(text);
     } catch (e) {
       lastErr = e;
-      // 指数退避: 1s, 3s, 9s
-      const delay = Math.pow(3, attempt) * 1000;
-      await new Promise(r => setTimeout(r, delay));
+      if (attempt < RETRY_DELAYS.length) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]));
+      }
     }
   }
   throw lastErr;
@@ -92,10 +96,21 @@ async function translateAll(cues, onProgress) {
   return { results, failedCount };
 }
 
+// 检查缓存里是否含 [翻译失败] - 旧版本可能缓存了失败的 cue
+function cacheHasFailed(cues) {
+  if (!Array.isArray(cues)) return true;
+  return cues.some(c => c && (c.failed === true || c.zh === '[翻译失败]'));
+}
+
 async function fetchAndTranslate(trackUrl, sender) {
   const cached = await chrome.storage.local.get(CACHE_PREFIX + trackUrl);
-  if (cached[CACHE_PREFIX + trackUrl]) {
-    return { cues: cached[CACHE_PREFIX + trackUrl], cached: true };
+  const cachedCues = cached[CACHE_PREFIX + trackUrl];
+  if (cachedCues && !cacheHasFailed(cachedCues)) {
+    return { cues: cachedCues, cached: true };
+  }
+  // 缓存里有 [翻译失败] -> 清掉,重新翻译
+  if (cachedCues) {
+    await chrome.storage.local.remove(CACHE_PREFIX + trackUrl);
   }
 
   // Fetch the subtitle source. It can be either a .m3u8 playlist or a direct .vtt.
