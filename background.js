@@ -47,20 +47,40 @@ async function translate(text) {
   return (data[0] || []).map(seg => seg[0]).filter(Boolean).join('');
 }
 
+// 带重试 + 退避(429/timeout 等临时失败)
+async function translateWithRetry(text, maxRetries = 3) {
+  let lastErr;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await translate(text);
+    } catch (e) {
+      lastErr = e;
+      // 指数退避: 1s, 3s, 9s
+      const delay = Math.pow(3, attempt) * 1000;
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 async function translateAll(cues, onProgress) {
   const results = [];
-  const CONCURRENCY = 4;
+  const CONCURRENCY = 2;  // 降并发避免 Google rate limit
   let i = 0;
   let done = 0;
+  let failedCount = 0;
   const total = cues.length;
   async function worker() {
     while (i < cues.length) {
       const idx = i++;
       const c = cues[idx];
       try {
-        c.zh = await translate(c.en);
+        c.zh = await translateWithRetry(c.en);
+        c.failed = false;
       } catch (e) {
         c.zh = '[翻译失败]';
+        c.failed = true;  // 标记为失败,缓存时跳过
+        failedCount++;
       }
       done++;
       if (onProgress) onProgress(done, total);
@@ -69,7 +89,7 @@ async function translateAll(cues, onProgress) {
   }
   const workers = Array.from({ length: CONCURRENCY }, worker);
   await Promise.all(workers);
-  return results;
+  return { results, failedCount };
 }
 
 async function fetchAndTranslate(trackUrl, sender) {
@@ -99,9 +119,12 @@ async function fetchAndTranslate(trackUrl, sender) {
     }
   };
 
-  const translated = await translateAll(cues, sendProgress);
-  await chrome.storage.local.set({ [CACHE_PREFIX + trackUrl]: translated });
-  return { cues: translated, cached: false };
+  const { results: translated, failedCount } = await translateAll(cues, sendProgress);
+  // 全部成功才缓存; 有失败就不缓存,下次能重新翻译
+  if (failedCount === 0) {
+    await chrome.storage.local.set({ [CACHE_PREFIX + trackUrl]: translated });
+  }
+  return { cues: translated, cached: false, failedCount };
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
