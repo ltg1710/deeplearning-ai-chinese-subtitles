@@ -67,6 +67,19 @@ async function translateWithRetry(text) {
   throw lastErr;
 }
 
+// Single-line, on-demand translation used by the new DOM-subtitle approach:
+// the content script reads the English subtitle already rendered on the page
+// and asks us to translate just that line. Results are cached per source string
+// so the same cue never gets translated twice.
+async function translateText(text) {
+  const key = 'txt:' + text;
+  const cached = await chrome.storage.local.get(key);
+  if (cached[key]) return cached[key];
+  const zh = await translateWithRetry(text);
+  await chrome.storage.local.set({ [key]: zh }).catch(() => {});
+  return zh;
+}
+
 async function translateAll(cues, onProgress) {
   const results = [];
   const CONCURRENCY = 2;  // 降并发避免 Google rate limit
@@ -146,6 +159,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'fetchAndTranslate') {
     fetchAndTranslate(msg.trackUrl, sender)
       .then(res => sendResponse({ ok: true, ...res }))
+      .catch(err => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
+  if (msg.type === 'translateText') {
+    translateText(msg.text)
+      .then(zh => sendResponse({ ok: true, zh }))
       .catch(err => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
